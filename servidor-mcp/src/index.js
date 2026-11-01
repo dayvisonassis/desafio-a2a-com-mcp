@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { carregarDados } from './dados.js';
+import { criarAgenda } from './dominio.js';
 import { lerSegredo } from './estado.js';
 import { criarFactory } from './servidor.js';
 import { criarBorda } from './http.js';
@@ -26,8 +27,10 @@ try {
 }
 const porta = lerPorta(process.env.MCP_PORT);
 
+// Uma agenda por processo: a factory do SDK roda a cada request e so a recebe.
 const dados = carregarDados();
-const handler = createMcpHandler(criarFactory({ dados, chave }), {
+const agenda = criarAgenda(dados);
+const handler = createMcpHandler(criarFactory({ dados, agenda, chave }), {
   legacy: 'reject',
   responseMode: 'json',
   onerror: (e) => console.error(`[mcp] erro do SDK: ${e.message}`),

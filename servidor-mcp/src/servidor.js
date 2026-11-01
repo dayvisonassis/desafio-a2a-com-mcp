@@ -50,7 +50,26 @@ function erro(mensagem) {
   return { isError: true, content: [{ type: 'text', text: mensagem }] };
 }
 
-export function criarFactory({ dados }) {
+function reservaCriada(reserva, versaoPolitica) {
+  const { id, sala, inicio, fim, responsavel } = reserva;
+  return completo({ reserva: id, reservado: true, sala, inicio, fim, responsavel, politica: versaoPolitica, motivo: null });
+}
+
+export function criarFactory({ dados, agenda }) {
+  async function consultar({ sala, inicio, fim }) {
+    const invalido = agenda.validar(sala, inicio, fim);
+    if (invalido) return erro(invalido);
+    const conflitos = agenda.conflitos(sala, inicio, fim);
+    return completo({ sala, livre: conflitos.length === 0, conflitos });
+  }
+
+  async function reservar({ sala, inicio, fim, responsavel }) {
+    const invalido = agenda.validar(sala, inicio, fim);
+    if (invalido) return erro(invalido);
+    if (agenda.conflitos(sala, inicio, fim).length > 0) return erro('reservar_sala: conflito ainda sem MRTR');
+    return reservaCriada(agenda.criar({ sala, inicio, fim, responsavel }), dados.versaoPolitica);
+  }
+
   return function buildServer() {
     const server = new McpServer(
       { name: 'central-de-salas', version: '1.0.0' },
@@ -67,13 +86,13 @@ export function criarFactory({ dados }) {
       description: 'Diz se uma sala esta livre no intervalo, e quais reservas conflitam.',
       inputSchema: ConsultarIn,
       outputSchema: ConsultarOut,
-    }, async () => erro('consultar_disponibilidade ainda nao implementada'));
+    }, consultar);
 
     server.registerTool('reservar_sala', {
       description: 'Reserva uma sala. Se o intervalo estiver ocupado, pergunta qual alternativa usar.',
       inputSchema: ReservarIn,
       outputSchema: ReservaOut,
-    }, async () => erro('reservar_sala ainda nao implementada'));
+    }, reservar);
 
     server.registerResource('politica', 'politica://uso', {
       title: 'Politica de uso das salas',
