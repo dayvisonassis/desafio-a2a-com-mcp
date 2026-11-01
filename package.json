@@ -1,0 +1,19 @@
+{
+  "name": "desafio-a2a-com-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "servidor-mcp",
+    "agente"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "npm test --workspaces",
+    "mcp": "node servidor-mcp/src/index.js",
+    "agente": "node agente/src/index.js",
+    "validar": "node scripts/validar.mjs"
+  }
+}
