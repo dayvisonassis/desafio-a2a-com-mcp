@@ -6,6 +6,7 @@ import { createServer } from 'node:http';
 export async function subirGravador(alvoInicial) {
   let alvo = alvoInicial;
   const trocas = [];
+  const atrasos = new Map(); // metodo JSON-RPC -> ms de atraso antes de repassar
 
   const servidor = createServer(async (req, res) => {
     const pedacos = [];
@@ -16,6 +17,8 @@ export async function subirGravador(alvoInicial) {
     try { corpo = JSON.parse(bruto); } catch { corpo = undefined; }
     const registro = { metodoHttp: req.method, headers, corpo, bruto };
     trocas.push(registro);
+    const atraso = atrasos.get(corpo?.method);
+    if (atraso) await new Promise((r) => setTimeout(r, atraso));
     try {
       const r = await fetch(alvo, { method: req.method, headers, body: req.method === 'POST' ? bruto : undefined });
       const texto = await r.text();
@@ -40,6 +43,8 @@ export async function subirGravador(alvoInicial) {
       return trocas.filter((t) => t.corpo?.method && (!metodo || t.corpo.method === metodo));
     },
     apontarPara(novoAlvo) { alvo = novoAlvo; },
+    // Atrasa os requests de um metodo (0 desliga), para observar estados intermediarios.
+    atrasar(metodo, ms) { if (ms) atrasos.set(metodo, ms); else atrasos.delete(metodo); },
     async parar() { await new Promise((resolve) => servidor.close(resolve)); },
   };
 }

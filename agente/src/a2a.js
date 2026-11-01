@@ -10,6 +10,7 @@ import {
   AgentEvent, DefaultRequestHandler, InMemoryTaskStore, STATE_HEADERS_KEY, defaultServerCallContextBuilder,
 } from '@a2a-js/sdk/server';
 import { jsonRpcHandler, UserBuilder } from '@a2a-js/sdk/server/express';
+import { TaskNotCancelableError, UnsupportedOperationError } from '@a2a-js/sdk/errors';
 import { criarCard } from './card.js';
 import { lerTraceparent, novoTrace } from './trace.js';
 
@@ -62,9 +63,11 @@ function publicarDesfecho(bus, taskId, contextId, desfecho) {
 }
 
 function criarExecutor(ponte) {
+  const contextos = new Map(); // taskId -> contextId, para o cancelTask
   return {
     async execute(rc, bus) {
       const { taskId, contextId } = rc;
+      contextos.set(taskId, contextId);
       // O SDK exige que toda execucao comece por um evento task (ou message).
       if (rc.task) {
         bus.publish(AgentEvent.task(rc.task));
@@ -80,6 +83,8 @@ function criarExecutor(ponte) {
       try {
         const texto = textoDe(rc.userMessage);
         if (rc.task) {
+          // So chega aqui Task em INPUT_REQUIRED: terminal o SDK recusa, e
+          // SUBMITTED/WORKING o handler abaixo recusa antes do executor.
           desfecho = await ponte.continuar(taskId, texto);
         } else {
           const headers = rc.context.state.get(STATE_HEADERS_KEY) ?? {};
@@ -88,18 +93,52 @@ function criarExecutor(ponte) {
       } catch (e) {
         desfecho = { estado: 'FAILED', texto: `Falha interna do agente: ${e?.message ?? e}` };
       }
+      if (desfecho.estado !== 'INPUT_REQUIRED') contextos.delete(taskId);
       publicarDesfecho(bus, taskId, contextId, desfecho);
     },
 
     async cancelTask(taskId, bus) {
-      bus.publish(AgentEvent.statusUpdate({ taskId, contextId: '', status: status(TaskState.TASK_STATE_CANCELED, undefined), metadata: undefined }));
+      ponte.descartar(taskId);
+      const contextId = contextos.get(taskId) ?? '';
+      contextos.delete(taskId);
+      bus.publish(AgentEvent.statusUpdate({
+        taskId, contextId, metadata: undefined,
+        status: status(TaskState.TASK_STATE_CANCELED, mensagemDoAgente(taskId, contextId, 'Task cancelada.')),
+      }));
     },
   };
 }
 
+// Enquanto a Task esta em SUBMITTED/WORKING ha uma chamada MCP em voo. Uma
+// mensagem nova reaproveitaria o bus dessa execucao e atropelaria o desfecho; um
+// cancelamento diria CANCELED enquanto a reserva ainda pode ser criada. Os dois
+// sao recusados ate a Task pausar ou terminar (terminal o proprio SDK ja recusa).
+const EM_ANDAMENTO = new Set([TaskState.TASK_STATE_SUBMITTED, TaskState.TASK_STATE_WORKING]);
+
+class HandlerDaPonte extends DefaultRequestHandler {
+  async emAndamento(taskId, context) {
+    return Boolean(taskId) && EM_ANDAMENTO.has((await this.taskStore.load(taskId, context))?.status?.state);
+  }
+
+  async sendMessage(params, context) {
+    const taskId = params?.message?.taskId;
+    if (await this.emAndamento(taskId, context)) {
+      throw new UnsupportedOperationError(`Task ${taskId} ainda esta em andamento; so uma Task em INPUT_REQUIRED aceita continuacao`);
+    }
+    return super.sendMessage(params, context);
+  }
+
+  async cancelTask(params, context) {
+    if (await this.emAndamento(params?.id, context)) {
+      throw new TaskNotCancelableError(`Task ${params.id} esta em andamento e nao pode ser cancelada agora`);
+    }
+    return super.cancelTask(params, context);
+  }
+}
+
 export function criarAppA2a({ ponte, urlPublica }) {
   const card = criarCard(urlPublica);
-  const handler = new DefaultRequestHandler(card, new InMemoryTaskStore(), criarExecutor(ponte));
+  const handler = new HandlerDaPonte(card, new InMemoryTaskStore(), criarExecutor(ponte));
   const app = express();
   app.get('/.well-known/agent-card.json', (req, res) => res.json(card));
   app.use('/a2a', jsonRpcHandler({
