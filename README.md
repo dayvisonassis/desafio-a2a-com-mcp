@@ -58,7 +58,7 @@ python validador/validar.py --agente http://localhost:7300 --mcp http://localhos
 O servidor MCP registra no stderr uma linha por request: `method`, `id`, `name`, `cliente`, `traceparent` e `retry`.
 - A primeira linha do stderr é um aviso do SDK sobre `responseMode: 'json'`. É esperado: as respostas saem sempre em JSON, e nenhuma tool emite notificação.
 - Os requests do agente aparecem com `cliente=agente-central-de-salas`. Os corpos de `exemplos/wire/03` e `06`, usados nos passos 11 e 13, trazem o mesmo `clientInfo` e por isso também aparecem assim.
-- Para os passos 5 e 6 do avaliador, procure o trace-id que o validador imprime na primeira linha. Um trecho típico, com um exemplo de trace-id:
+- Para os passos 5 e 6 do avaliador, procure o trace-id que o validador imprime na primeira linha. Um trecho típico, em que `<trace-id>` é o valor impresso pelo validador e foram omitidas as linhas dos ids 3 e 4 (o `tools/list` e o `resources/read` da Task que pausa):
 
 ```text
 [mcp] ... method=tools/list id=0 name=- cliente=agente-central-de-salas traceparent=00-<trace-id>-2124e5d18e27756c-01 retry=nao
@@ -114,7 +114,7 @@ corpo() { node -e "process.stdout.write(JSON.stringify(require('./exemplos/wire/
 idDaTask() { node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).result.task.id))"; }
 
 # 3. card: igual a exemplos/wire/07-a2a-agent-card.json, exceto o host da url (localhost)
-curl -s http://localhost:7300/.well-known/agent-card.json
+curl -s -w '\n' http://localhost:7300/.well-known/agent-card.json
 
 # 7. sala-garagem 14h-15h: TASK_STATE_INPUT_REQUIRED com "alternativas: sala-fusca, sala-mirante"
 RESP=$(corpo 08-a2a-send-message.json | curl -s $A2A -H 'Content-Type: application/json' --data-binary @-)
@@ -122,18 +122,18 @@ echo "$RESP"
 TASK=$(echo "$RESP" | idDaTask)
 
 # 8. continuação e GetTask: COMPLETED com o artifact reserva em sala-mirante e o campo politica
-curl -s $A2A -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":2,"method":"SendMessage","params":{"message":{"messageId":"msg-2","role":"ROLE_USER","parts":[{"text":"escolha=sala-mirante"}],"taskId":"'$TASK'"}}}'
-curl -s $A2A -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":3,"method":"GetTask","params":{"id":"'$TASK'"}}'
+curl -s -w '\n' $A2A -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":2,"method":"SendMessage","params":{"message":{"messageId":"msg-2","role":"ROLE_USER","parts":[{"text":"escolha=sala-mirante"}],"taskId":"'$TASK'"}}}'
+curl -s -w '\n' $A2A -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":3,"method":"GetTask","params":{"id":"'$TASK'"}}'
 
 # 9. repete o passo 7 (nova Task) e recusa: TASK_STATE_CANCELED
 #    (o passo 8 ocupou a sala-mirante, então esta pausa lista só "alternativas: sala-fusca")
 RESP=$(corpo 08-a2a-send-message.json | curl -s $A2A -H 'Content-Type: application/json' --data-binary @-)
 echo "$RESP"
 TASK=$(echo "$RESP" | idDaTask)
-curl -s $A2A -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":4,"method":"SendMessage","params":{"message":{"messageId":"msg-4","role":"ROLE_USER","parts":[{"text":"escolha=recusar"}],"taskId":"'$TASK'"}}}'
+curl -s -w '\n' $A2A -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":4,"method":"SendMessage","params":{"message":{"messageId":"msg-4","role":"ROLE_USER","parts":[{"text":"escolha=recusar"}],"taskId":"'$TASK'"}}}'
 
 # 10. sala inexistente: TASK_STATE_FAILED com "Sala inexistente: sala-inexistente"
-curl -s $A2A -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":5,"method":"SendMessage","params":{"message":{"messageId":"msg-5","role":"ROLE_USER","parts":[{"text":"reservar sala=sala-inexistente inicio=2026-11-03T14:00:00-03:00 fim=2026-11-03T15:00:00-03:00 responsavel=Marty"}]}}}'
+curl -s -w '\n' $A2A -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":5,"method":"SendMessage","params":{"message":{"messageId":"msg-5","role":"ROLE_USER","parts":[{"text":"reservar sala=sala-inexistente inicio=2026-11-03T14:00:00-03:00 fim=2026-11-03T15:00:00-03:00 responsavel=Marty"}]}}}'
 ```
 
 Direto no servidor MCP, o transporte exige os headers espelhados do corpo (`MCP-Protocol-Version`, `Mcp-Method` e `Mcp-Name`). Sem eles, ou com valores diferentes do corpo, a resposta é `-32020`.
@@ -149,11 +149,14 @@ ESTADO=$(echo "$RESP" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('e
 
 # retry com UM caractere trocado no requestState: -32602 "Invalid or expired requestState"
 ADULTERADO="${ESTADO:0:20}$([ "${ESTADO:20:1}" = A ] && echo B || echo A)${ESTADO:21}"
-curl -s "${H[@]}" $MCP -d '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"reservar_sala","arguments":{"sala":"sala-garagem","inicio":"2026-11-03T14:00:00-03:00","fim":"2026-11-03T15:00:00-03:00","responsavel":"Marty"},"inputResponses":{"escolha_de_sala":{"action":"accept","content":{"sala":"sala-fusca"}}},"requestState":"'$ADULTERADO'","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{"elicitation":{"form":{}}}}}}'
+curl -s -w '\n' "${H[@]}" $MCP -d '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"reservar_sala","arguments":{"sala":"sala-garagem","inicio":"2026-11-03T14:00:00-03:00","fim":"2026-11-03T15:00:00-03:00","responsavel":"Marty"},"inputResponses":{"escolha_de_sala":{"action":"accept","content":{"sala":"sala-fusca"}}},"requestState":"'$ADULTERADO'","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{"elicitation":{"form":{}}}}}}'
+```
 
-# 12. reinicie o servidor MCP (Ctrl+C no terminal 1 e "node servidor-mcp/src/index.js" de novo, sem repetir o export)
-#     e repita o retry com "$ESTADO" intacto: reserva concluída
-curl -s "${H[@]}" $MCP -d '{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"reservar_sala","arguments":{"sala":"sala-garagem","inicio":"2026-11-03T14:00:00-03:00","fim":"2026-11-03T15:00:00-03:00","responsavel":"Marty"},"inputResponses":{"escolha_de_sala":{"action":"accept","content":{"sala":"sala-fusca"}}},"requestState":"'$ESTADO'","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{"elicitation":{"form":{}}}}}}'
+**Agora reinicie o servidor MCP** no terminal 1: Ctrl+C e `node servidor-mcp/src/index.js` de novo, sem repetir o `export`, para manter a mesma chave. O restart é justamente o que o passo 12 testa. Depois rode o bloco abaixo **neste mesmo terminal**, onde `ESTADO`, `H`, `MCP` e `corpo` continuam definidos.
+
+```bash
+# 12. retry com o "$ESTADO" intacto, num processo novo do servidor MCP: reserva concluída
+curl -s -w '\n' "${H[@]}" $MCP -d '{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"reservar_sala","arguments":{"sala":"sala-garagem","inicio":"2026-11-03T14:00:00-03:00","fim":"2026-11-03T15:00:00-03:00","responsavel":"Marty"},"inputResponses":{"escolha_de_sala":{"action":"accept","content":{"sala":"sala-fusca"}}},"requestState":"'$ESTADO'","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{"elicitation":{"form":{}}}}}}'
 
 # 13. o mesmo conflito sem a capability de elicitation: -32021 com HTTP 400
 corpo 06-erro-32021-sem-elicitation.json | curl -s -w '\nHTTP %{http_code}\n' "${H[@]}" $MCP --data-binary @-
@@ -210,7 +213,7 @@ No servidor, o retry é atendido por `retomar`, em [`servidor-mcp/src/servidor.j
 - **Elicitation vazia:** `{"elicitation": {}}` conta como form mode no SDK (`isImpliedCapabilityMember`, em `node_modules/@modelcontextprotocol/server/dist/src-DdvbAHrR.mjs`), como a spec define por compatibilidade. O agente declara sempre `{"elicitation": {"form": {}}}`.
 - **Respostas MCP:** saem sempre em `application/json` (`responseMode: 'json'`), nunca em SSE.
 - **Prazos:**
-  - o agente espera no máximo 8 s pela conexão MCP e 7 s por request. Se o servidor MCP falhar, a Task termina em FAILED: na hora, se a conexão for recusada; em 7 s, se ele aceitar e não responder; em 8 s, se o agente nunca tiver conseguido conectar. Com ele lento mas vivo, o pior caso fica abaixo dos 30 s do validador;
+  - o agente espera no máximo 8 s pela conexão MCP e 7 s por request. Se o servidor MCP falhar, a Task termina em FAILED: na hora, se a conexão for recusada; em 7 s, se ele aceitar e não responder; em até 8 s, se o agente nunca tiver conseguido conectar. Com ele lento mas vivo, o pior caso fica abaixo dos 30 s do validador;
   - falhas de transporte chegam ao cliente A2A como uma mensagem curta, sem a URL interna nem o corpo da resposta HTTP.
 - **Datas:** a janela e a duração são comparadas como instantes no horário de São Paulo. `inicio` e `fim` voltam exatamente como as strings recebidas, e datas inexistentes, como 31/11, são recusadas como formato inválido.
 
