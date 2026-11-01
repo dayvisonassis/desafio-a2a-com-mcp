@@ -22,7 +22,7 @@ npm ci
 O servidor MCP só sobe com `REQUEST_STATE_SECRET`: 32 bytes aleatórios, em hex (64 caracteres). Gere a sua chave. O valor usado nesta entrega não está no repositório.
 
 ```bash
-# bash (Linux, macOS, Git Bash)
+# bash (Linux, macOS, Git Bash; no Git Bash, se python3 não existir, use python ou py -3)
 export REQUEST_STATE_SECRET=$(python3 -c "import secrets; print(secrets.token_hex(32))")
 ```
 
@@ -32,6 +32,8 @@ $env:REQUEST_STATE_SECRET = python -c "import secrets; print(secrets.token_hex(3
 ```
 
 Exporte a chave **no terminal do servidor MCP** e mantenha o mesmo valor nos restarts. É ela que permite concluir, depois de reiniciar o processo, um retry iniciado antes do restart. O agente não precisa da chave.
+
+Para reiniciar o servidor MCP, use Ctrl+C e rode de novo só `node servidor-mcp/src/index.js` **no mesmo terminal**. Não repita o `export`: ele gera outra chave, e um `requestState` emitido antes passa a ser recusado com `-32602`.
 
 ### Subir os dois processos
 
@@ -47,17 +49,32 @@ python3 validador/validar.py --agente http://localhost:7300 --mcp http://localho
 ```
 
 ```powershell
-# o mesmo no PowerShell (no Windows, python3 costuma ser so o atalho da Microsoft Store)
+# o mesmo no PowerShell (no Windows, python3 costuma ser só o atalho da Microsoft Store)
 node servidor-mcp/src/index.js        # terminal 1, com $env:REQUEST_STATE_SECRET definida
 node agente/src/index.js              # terminal 2
 python validador/validar.py --agente http://localhost:7300 --mcp http://localhost:7301   # terminal 3 (ou py -3)
 ```
 
-O servidor MCP registra no stderr uma linha por request: `method`, `id`, `name`, `cliente`, `traceparent` e `retry`. Os requests do agente aparecem com `cliente=agente-central-de-salas`.
+O servidor MCP registra no stderr uma linha por request: `method`, `id`, `name`, `cliente`, `traceparent` e `retry`.
+- A primeira linha do stderr é um aviso do SDK sobre `responseMode: 'json'`. É esperado: as respostas saem sempre em JSON, e nenhuma tool emite notificação.
+- Os requests do agente aparecem com `cliente=agente-central-de-salas`. Os corpos de `exemplos/wire/03` e `06`, usados nos passos 11 e 13, trazem o mesmo `clientInfo` e por isso também aparecem assim.
+- Para os passos 5 e 6 do avaliador, procure o trace-id que o validador imprime na primeira linha. Um trecho típico, com um exemplo de trace-id:
+
+```text
+[mcp] ... method=tools/list id=0 name=- cliente=agente-central-de-salas traceparent=00-<trace-id>-2124e5d18e27756c-01 retry=nao
+[mcp] ... method=resources/read id=1 name=politica://uso cliente=agente-central-de-salas traceparent=00-<trace-id>-2b8ed7e6c52c0e64-01 retry=nao
+[mcp] ... method=tools/call id=2 name=reservar_sala cliente=agente-central-de-salas traceparent=00-<trace-id>-b696fbced9a2a089-01 retry=nao
+[mcp] ... method=tools/call id=5 name=reservar_sala cliente=agente-central-de-salas traceparent=00-<trace-id>-970b7f37c5054324-01 retry=nao
+[mcp] ... method=tools/call id=6 name=reservar_sala cliente=agente-central-de-salas traceparent=00-<trace-id>-a932bfce95754a62-01 retry=sim
+```
+
+Os ids 5 e 6 são a reserva que pausou: o tools/call inicial e o retry, com ids diferentes e o mesmo trace-id.
 
 Para repetir o validador, reinicie os dois processos antes. Ele cria reservas, e as reservas ficam em memória.
 
 ### Tudo de uma vez
+
+Esta é uma alternativa aos três terminais. Encerre antes os processos da seção anterior.
 
 ```bash
 node scripts/validar.mjs
@@ -94,21 +111,26 @@ Os comandos abaixo são para **bash**: Linux, macOS, Git Bash ou WSL. No Windows
 ```bash
 A2A=http://localhost:7300/a2a
 corpo() { node -e "process.stdout.write(JSON.stringify(require('./exemplos/wire/$1').request.body))"; }
+idDaTask() { node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).result.task.id))"; }
 
-# 3. card
+# 3. card: igual a exemplos/wire/07-a2a-agent-card.json, exceto o host da url (localhost)
 curl -s http://localhost:7300/.well-known/agent-card.json
 
 # 7. sala-garagem 14h-15h: TASK_STATE_INPUT_REQUIRED com "alternativas: sala-fusca, sala-mirante"
-corpo 08-a2a-send-message.json | curl -s $A2A -H 'Content-Type: application/json' --data-binary @-
-TASK=<id da Task devolvida acima>
+RESP=$(corpo 08-a2a-send-message.json | curl -s $A2A -H 'Content-Type: application/json' --data-binary @-)
+echo "$RESP"
+TASK=$(echo "$RESP" | idDaTask)
 
 # 8. continuação e GetTask: COMPLETED com o artifact reserva em sala-mirante e o campo politica
 curl -s $A2A -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":2,"method":"SendMessage","params":{"message":{"messageId":"msg-2","role":"ROLE_USER","parts":[{"text":"escolha=sala-mirante"}],"taskId":"'$TASK'"}}}'
 curl -s $A2A -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":3,"method":"GetTask","params":{"id":"'$TASK'"}}'
 
-# 9. repita o passo 7 (nova Task) e recuse: TASK_STATE_CANCELED
-#    (o passo 8 ocupou a sala-mirante, entao esta pausa lista so "alternativas: sala-fusca")
-curl -s $A2A -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":4,"method":"SendMessage","params":{"message":{"messageId":"msg-4","role":"ROLE_USER","parts":[{"text":"escolha=recusar"}],"taskId":"<id da nova Task>"}}}'
+# 9. repete o passo 7 (nova Task) e recusa: TASK_STATE_CANCELED
+#    (o passo 8 ocupou a sala-mirante, então esta pausa lista só "alternativas: sala-fusca")
+RESP=$(corpo 08-a2a-send-message.json | curl -s $A2A -H 'Content-Type: application/json' --data-binary @-)
+echo "$RESP"
+TASK=$(echo "$RESP" | idDaTask)
+curl -s $A2A -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":4,"method":"SendMessage","params":{"message":{"messageId":"msg-4","role":"ROLE_USER","parts":[{"text":"escolha=recusar"}],"taskId":"'$TASK'"}}}'
 
 # 10. sala inexistente: TASK_STATE_FAILED com "Sala inexistente: sala-inexistente"
 curl -s $A2A -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":5,"method":"SendMessage","params":{"message":{"messageId":"msg-5","role":"ROLE_USER","parts":[{"text":"reservar sala=sala-inexistente inicio=2026-11-03T14:00:00-03:00 fim=2026-11-03T15:00:00-03:00 responsavel=Marty"}]}}}'
@@ -129,7 +151,8 @@ ESTADO=$(echo "$RESP" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('e
 ADULTERADO="${ESTADO:0:20}$([ "${ESTADO:20:1}" = A ] && echo B || echo A)${ESTADO:21}"
 curl -s "${H[@]}" $MCP -d '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"reservar_sala","arguments":{"sala":"sala-garagem","inicio":"2026-11-03T14:00:00-03:00","fim":"2026-11-03T15:00:00-03:00","responsavel":"Marty"},"inputResponses":{"escolha_de_sala":{"action":"accept","content":{"sala":"sala-fusca"}}},"requestState":"'$ADULTERADO'","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{"elicitation":{"form":{}}}}}}'
 
-# 12. reinicie o servidor MCP (mesma REQUEST_STATE_SECRET) e repita o retry com "$ESTADO" intacto: reserva concluída
+# 12. reinicie o servidor MCP (Ctrl+C no terminal 1 e "node servidor-mcp/src/index.js" de novo, sem repetir o export)
+#     e repita o retry com "$ESTADO" intacto: reserva concluída
 curl -s "${H[@]}" $MCP -d '{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"reservar_sala","arguments":{"sala":"sala-garagem","inicio":"2026-11-03T14:00:00-03:00","fim":"2026-11-03T15:00:00-03:00","responsavel":"Marty"},"inputResponses":{"escolha_de_sala":{"action":"accept","content":{"sala":"sala-fusca"}}},"requestState":"'$ESTADO'","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{"elicitation":{"form":{}}}}}}'
 
 # 13. o mesmo conflito sem a capability de elicitation: -32021 com HTTP 400
@@ -138,11 +161,12 @@ corpo 06-erro-32021-sem-elicitation.json | curl -s -w '\nHTTP %{http_code}\n' "$
 
 ## Onde a ponte acontece
 
-A ponte está em [`agente/src/ponte.js`](agente/src/ponte.js), na função `desfechoDe`. Quando o `tools/call` de `reservar_sala` volta com `resultType: "input_required"`, a função faz quatro coisas:
+A ponte está em [`agente/src/ponte.js`](agente/src/ponte.js), na função `desfechoDe`. Quando o `tools/call` de `reservar_sala` volta com `resultType: "input_required"`, a função faz três coisas:
 - lê a única elicitation do `inputRequests` (`lerPergunta`);
 - guarda o `requestState`, a chave atribuída pelo servidor, as opções, os argumentos originais e o trace da Task num `Map` por `taskId`, fora do objeto Task, que é o que se serializa para o cliente A2A;
-- devolve o desfecho `INPUT_REQUIRED` com o texto `alternativas: ...`;
-- em [`agente/src/a2a.js`](agente/src/a2a.js), o executor publica esse desfecho como `TASK_STATE_INPUT_REQUIRED`, e o `SendMessage` bloqueante termina ali.
+- devolve o desfecho `INPUT_REQUIRED` com o texto `alternativas: ...`.
+
+Em seguida, em [`agente/src/a2a.js`](agente/src/a2a.js), o `execute` do executor (`criarExecutor`) passa esse desfecho para `publicarDesfecho`, que o publica como `TASK_STATE_INPUT_REQUIRED`, e o `SendMessage` bloqueante termina ali.
 
 O `input_required` chega cru por três motivos, todos em [`agente/src/mcp-cliente.js`](agente/src/mcp-cliente.js):
 - o `Client` é criado com `inputRequired: { autoFulfill: false }` (em `novoClient`);
@@ -159,7 +183,16 @@ No servidor, o retry é atendido por `retomar`, em [`servidor-mcp/src/servidor.j
 - **Codec:** o servidor usa o utilitário do próprio SDK, `createRequestStateCodec`, com HMAC-SHA256. A chave vem de `REQUEST_STATE_SECRET`, com no mínimo 32 bytes, e o servidor não sobe sem ela. O token tem a forma `v1.<payload>.<mac>` e é **assinado, não cifrado**.
 - **Conteúdo:** o payload carrega tudo o que o retry precisa: a tool (`reservar_sala`), os argumentos originais, as alternativas oferecidas e a expiração. O servidor não guarda nada entre o `input_required` e o retry, e por isso o retry funciona depois de reiniciar o processo.
 - **Retry:** os `arguments` reenviados pelo cliente são ignorados, e valem os valores selados. Uma escolha fora das alternativas seladas dá `isError`. Se a sala escolhida for ocupada entre as rodadas, o servidor pergunta de novo, com as alternativas recalculadas.
-- **Codificação canônica:** o `verify` do SDK decodifica o MAC com `atob` (`node_modules/@modelcontextprotocol/server/dist/index.mjs`, linha 1473). O `atob` tolera espaço e quebra de linha, aceita `+`, `/` e `=` e ignora os bits de sobra do último caractere, então variantes adulteradas do mesmo MAC passavam. Medi isso: o codec puro aceitou 3 variantes do último caractere de um token. O wrapper em [`servidor-mcp/src/estado.js`](servidor-mcp/src/estado.js) exige base64url canônico em cada segmento antes de chamar o `verify`. Os testes trocam cada caractere do token e inserem espaço, `\n` e `=` em cada posição, e todas as variantes são rejeitadas.
+- **Codificação canônica:** o `verify` do SDK decodifica o MAC com `atob`, sem conferir se a entrada é base64url canônico:
+
+  ```js
+  // node_modules/@modelcontextprotocol/server/dist/index.mjs, linhas 1471-1473
+  function base64UrlToBytes(s) {
+  	const b64 = s.replaceAll("-", "+").replaceAll("_", "/");
+  	const bin = atob(b64);
+  ```
+
+  O `atob` tolera espaço e quebra de linha, aceita `+`, `/` e `=` e ignora os bits de sobra do último caractere, então variantes adulteradas do mesmo MAC passavam. Medi isso: o codec puro aceitou 3 variantes do último caractere de um token. O wrapper em [`servidor-mcp/src/estado.js`](servidor-mcp/src/estado.js) exige base64url canônico em cada segmento antes de chamar o `verify`. Os testes trocam cada caractere do token e inserem espaço, `\n` e `=` em cada posição, e todas as variantes são rejeitadas.
 - **Ligação à tool:** o mesmo `verify` confere que a tool selada é a do header `Mcp-Name`, que o SDK garante igual a `params.name`. Um estado de `reservar_sala` apresentado em outra tool é recusado. Qualquer falha nesse `verify` vira `-32602` "Invalid or expired requestState". Se a checagem ficasse dentro do handler da tool, a falha viraria `isError`.
 - **Validade:** **20 minutos** (`TTL_SEGUNDOS` em `estado.js`), dentro da faixa de 5 a 30, com folga para um avaliador humano.
 - **Limite:** como o servidor não guarda nada, não há controle de uso único. Um estado válido pode ser reapresentado até expirar.
@@ -177,16 +210,38 @@ No servidor, o retry é atendido por `retomar`, em [`servidor-mcp/src/servidor.j
 - **Elicitation vazia:** `{"elicitation": {}}` conta como form mode no SDK (`isImpliedCapabilityMember`, em `node_modules/@modelcontextprotocol/server/dist/src-DdvbAHrR.mjs`), como a spec define por compatibilidade. O agente declara sempre `{"elicitation": {"form": {}}}`.
 - **Respostas MCP:** saem sempre em `application/json` (`responseMode: 'json'`), nunca em SSE.
 - **Prazos:**
-  - o agente espera no máximo 8 s pela conexão MCP e 7 s por request. Com o servidor MCP mudo ou fora do ar, a Task termina em FAILED em uns 8 s; com ele lento mas vivo, o pior caso fica abaixo dos 30 s do validador;
+  - o agente espera no máximo 8 s pela conexão MCP e 7 s por request. Se o servidor MCP falhar, a Task termina em FAILED: na hora, se a conexão for recusada; em 7 s, se ele aceitar e não responder; em 8 s, se o agente nunca tiver conseguido conectar. Com ele lento mas vivo, o pior caso fica abaixo dos 30 s do validador;
   - falhas de transporte chegam ao cliente A2A como uma mensagem curta, sem a URL interna nem o corpo da resposta HTTP.
 - **Datas:** a janela e a duração são comparadas como instantes no horário de São Paulo. `inicio` e `fim` voltam exatamente como as strings recebidas, e datas inexistentes, como 31/11, são recusadas como formato inválido.
 
 ### Limitação do SDK documentada
-O `connect()` do `@modelcontextprotocol/client` manda uma sonda `server/discover`, e ela não aceita `_meta` extra (`buildProbeRequest`, `node_modules/@modelcontextprotocol/client/dist/public-CvV4ZHkX.mjs`, linha 2369). Por isso a sonda sai sem `traceparent`. O agente conecta na subida, fora de qualquer Task, e assim todos os requests MCP de uma Task levam o `traceparent`. Se o servidor MCP estiver fora do ar na subida, a reconexão acontece dentro da primeira Task, e a sonda dessa reconexão sai sem `traceparent`.
+O `connect()` do `@modelcontextprotocol/client` manda uma sonda `server/discover`. O `_meta` dessa sonda é montado só com a versão, o `clientInfo` e as capabilities, e não há parâmetro para `traceparent`:
+
+```js
+// node_modules/@modelcontextprotocol/client/dist/public-CvV4ZHkX.mjs, linhas 2368-2380
+/** Build the probe request: `server/discover` carrying the full per-request `_meta` envelope. */
+function buildProbeRequest(id, protocolVersion, clientInfo, capabilities) {
+	return {
+		jsonrpc: "2.0",
+		id,
+		method: "server/discover",
+		params: { _meta: codecForVersion(protocolVersion).outboundEnvelope({
+			protocolVersion,
+			clientInfo,
+			clientCapabilities: capabilities
+		}) }
+	};
+}
+// linha 2444: window.exchange((id) => buildProbeRequest(id, requestedVersion, deps.clientInfo, deps.capabilities), timeoutMs)
+```
+
+Por isso a sonda sai sem `traceparent`. O `connect(transport, { prior })` pularia a sonda, mas exige um `DiscoverResult` obtido antes, que não existe na primeira conexão.
+
+O agente conecta na subida, fora de qualquer Task, e assim todos os requests MCP de uma Task levam o `traceparent`. Se o servidor MCP estiver fora do ar na subida, a reconexão acontece dentro da primeira Task, e a sonda dessa reconexão sai sem `traceparent`.
 
 ## Saída do validador
 
-Esta é a última execução, num clone limpo do commit `ea9a536`, seguindo os comandos da seção "Como rodar". Os dois processos foram recém-iniciados (Node v22.15.0, Python 3.14), e o código de saída foi 0. No stderr do servidor MCP, as linhas `cliente=agente-central-de-salas` com o trace-id `5df5a01365ae94a691affb6f5ca575fc` mostram o `tools/list` antes do primeiro `tools/call` e o par `tools/call` mais retry (`retry=sim`) com ids diferentes. A mesma execução também passou num clone limpo no WSL Ubuntu, com Python 3.10, e o revisor final a reproduziu no Node 20.11.1.
+Esta é a última execução, num clone limpo do commit `ea9a536`, seguindo os comandos da seção "Como rodar". Os dois processos foram recém-iniciados (Node v22.15.0, Python 3.14), e o código de saída foi 0. No stderr do servidor MCP, as linhas `cliente=agente-central-de-salas` com o trace-id `5df5a01365ae94a691affb6f5ca575fc` mostram o `tools/list` antes do primeiro `tools/call` e o par `tools/call` mais retry (`retry=sim`) com ids diferentes. O mesmo código também passou 36/36 num clone limpo do GitHub no WSL Ubuntu, com Node 20.19 (o mínimo exigido é o 20) e Python 3.10. Depois de `ea9a536`, só o README mudou.
 
 ```text
 trace-id desta execucao: 5df5a01365ae94a691affb6f5ca575fc
