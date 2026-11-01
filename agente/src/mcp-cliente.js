@@ -38,9 +38,10 @@ const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 const INDISPONIVEL = 'O servidor MCP esta indisponivel';
 
 // Prazos: o validador espera no maximo 30 s por resposta A2A. Uma Task faz ate
-// tres requests MCP; com 8 s cada (e 8 s de espera pela conexao), ela responde
-// antes disso mesmo com o servidor MCP mudo.
-export function criarClienteMcp({ url, tentativas = 40, intervaloMs = 250, timeoutMs = 8000, esperaConexaoMs = 8000, log = (linha) => console.error(linha) }) {
+// tres requests MCP: com ate 8 s de espera pela conexao e 7 s por request, o pior
+// caso (servidor lento mas vivo) fica em 29 s; com o servidor mudo ou fora do ar,
+// a Task falha no primeiro prazo estourado, em uns 8 s.
+export function criarClienteMcp({ url, tentativas = 40, intervaloMs = 250, timeoutMs = 7000, esperaConexaoMs = 8000, log = (linha) => console.error(linha) }) {
   let client;
   let conexao;
   let fechado = false;

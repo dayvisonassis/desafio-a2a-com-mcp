@@ -9,7 +9,7 @@ Os dois falam só por HTTP. O agente não importa código do servidor, não lê 
 
 ## Como rodar
 
-Requisitos: Node.js 20 ou superior e Python 3.10 ou superior (só para o validador). As dependências estão travadas em versão exata no `package-lock.json`.
+Requisitos: Node.js 20 ou superior e Python 3.10 ou superior (só para o validador). As dependências estão travadas em versão exata no `package-lock.json`, e o `.npmrc` tem `engine-strict=true`: com um Node mais antigo, o `npm ci` já recusa com uma mensagem clara.
 
 ```bash
 git clone https://github.com/dayvisonassis/desafio-a2a-com-mcp.git
@@ -46,6 +46,13 @@ node agente/src/index.js
 python3 validador/validar.py --agente http://localhost:7300 --mcp http://localhost:7301
 ```
 
+```powershell
+# o mesmo no PowerShell (no Windows, python3 costuma ser so o atalho da Microsoft Store)
+node servidor-mcp/src/index.js        # terminal 1, com $env:REQUEST_STATE_SECRET definida
+node agente/src/index.js              # terminal 2
+python validador/validar.py --agente http://localhost:7300 --mcp http://localhost:7301   # terminal 3 (ou py -3)
+```
+
 O servidor MCP registra no stderr uma linha por request: `method`, `id`, `name`, `cliente`, `traceparent` e `retry`. Os requests do agente aparecem com `cliente=agente-central-de-salas`.
 
 Para repetir o validador, reinicie os dois processos antes. Ele cria reservas, e as reservas ficam em memória.
@@ -66,6 +73,8 @@ Ele termina com código 0 somente se tudo passar.
 
 Os testes automatizados (`node:test`, sem dependência extra) rodam com `npm test`.
 
+Há também um cliente MCP manual, sem A2A, que descobre as tools, lê a política e completa o MRTR na mão contra o servidor em `MCP_URL`. É uma ferramenta de apoio, fora do caminho do avaliador: `node agente/scripts/cliente-manual.js sala-fusca` (ou `recusar`, ou sem argumento para só ver as alternativas).
+
 ### Variáveis de ambiente
 
 | Variável | Processo | Padrão |
@@ -80,7 +89,7 @@ Os testes automatizados (`node:test`, sem dependência extra) rodam com `npm tes
 
 O validador ocupa a sala-fusca e a sala-mirante das 14h às 15h. Antes dos passos manuais, **reinicie os dois processos**. Sem isso, a garagem das 14h às 15h fica sem alternativa.
 
-Os comandos abaixo são para bash e usam o `node` para tirar o corpo dos arquivos de `exemplos/wire/`.
+Os comandos abaixo são para **bash**: Linux, macOS, Git Bash ou WSL. No Windows PowerShell 5.1, `curl` é um alias de `Invoke-WebRequest` e não aceita essas opções. Eles usam o `node` para tirar o corpo dos arquivos de `exemplos/wire/` e para ler campos das respostas, sem precisar de `jq`.
 
 ```bash
 A2A=http://localhost:7300/a2a
@@ -98,6 +107,7 @@ curl -s $A2A -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":2,"me
 curl -s $A2A -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":3,"method":"GetTask","params":{"id":"'$TASK'"}}'
 
 # 9. repita o passo 7 (nova Task) e recuse: TASK_STATE_CANCELED
+#    (o passo 8 ocupou a sala-mirante, entao esta pausa lista so "alternativas: sala-fusca")
 curl -s $A2A -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":4,"method":"SendMessage","params":{"message":{"messageId":"msg-4","role":"ROLE_USER","parts":[{"text":"escolha=recusar"}],"taskId":"<id da nova Task>"}}}'
 
 # 10. sala inexistente: TASK_STATE_FAILED com "Sala inexistente: sala-inexistente"
@@ -110,9 +120,10 @@ Direto no servidor MCP, o transporte exige os headers espelhados do corpo (`MCP-
 MCP=http://localhost:7301/mcp
 H=(-H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -H 'MCP-Protocol-Version: 2026-07-28' -H 'Mcp-Method: tools/call' -H 'Mcp-Name: reservar_sala')
 
-# 11. conflito: guarde a chave de inputRequests (escolha_de_sala) e o requestState
-corpo 03-tools-call-conflito-input-required.json | curl -s "${H[@]}" $MCP --data-binary @-
-ESTADO='<requestState devolvido acima>'
+# 11. conflito: a resposta traz a chave de inputRequests (escolha_de_sala) e o requestState
+RESP=$(corpo 03-tools-call-conflito-input-required.json | curl -s "${H[@]}" $MCP --data-binary @-)
+echo "$RESP"
+ESTADO=$(echo "$RESP" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).result.requestState))")
 
 # retry com UM caractere trocado no requestState: -32602 "Invalid or expired requestState"
 ADULTERADO="${ESTADO:0:20}$([ "${ESTADO:20:1}" = A ] && echo B || echo A)${ESTADO:21}"
@@ -133,7 +144,10 @@ A ponte está em [`agente/src/ponte.js`](agente/src/ponte.js), na função `desf
 - devolve o desfecho `INPUT_REQUIRED` com o texto `alternativas: ...`;
 - em [`agente/src/a2a.js`](agente/src/a2a.js), o executor publica esse desfecho como `TASK_STATE_INPUT_REQUIRED`, e o `SendMessage` bloqueante termina ali.
 
-O `input_required` chega cru porque o cliente MCP ([`agente/src/mcp-cliente.js`](agente/src/mcp-cliente.js), `chamarTool`) usa `allowInputRequired: true`, liga `autoFulfill: false` e não registra handler de elicitation.
+O `input_required` chega cru por três motivos, todos em [`agente/src/mcp-cliente.js`](agente/src/mcp-cliente.js):
+- o `Client` é criado com `inputRequired: { autoFulfill: false }` (em `novoClient`);
+- o `chamarTool` manda o `tools/call` com `allowInputRequired: true`;
+- nenhum handler de elicitation é registrado.
 
 O `requestState` volta para o servidor na função `continuar` do mesmo `ponte.js`. A continuação `escolha=<id>` ou `escolha=recusar` vira `inputResponses` com a mesma chave, e o agente repete o `tools/call` original: mesmo `name`, mesmos `arguments`, o `requestState` ecoado sem modificação e um id JSON-RPC novo, que o `Client` do SDK gera sozinho.
 
@@ -163,7 +177,7 @@ No servidor, o retry é atendido por `retomar`, em [`servidor-mcp/src/servidor.j
 - **Elicitation vazia:** `{"elicitation": {}}` conta como form mode no SDK (`isImpliedCapabilityMember`, em `node_modules/@modelcontextprotocol/server/dist/src-DdvbAHrR.mjs`), como a spec define por compatibilidade. O agente declara sempre `{"elicitation": {"form": {}}}`.
 - **Respostas MCP:** saem sempre em `application/json` (`responseMode: 'json'`), nunca em SSE.
 - **Prazos:**
-  - o agente espera no máximo 8 s pela conexão MCP e 8 s por request, para responder antes dos 30 s do validador mesmo com o servidor MCP mudo;
+  - o agente espera no máximo 8 s pela conexão MCP e 7 s por request. Com o servidor MCP mudo ou fora do ar, a Task termina em FAILED em uns 8 s; com ele lento mas vivo, o pior caso fica abaixo dos 30 s do validador;
   - falhas de transporte chegam ao cliente A2A como uma mensagem curta, sem a URL interna nem o corpo da resposta HTTP.
 - **Datas:** a janela e a duração são comparadas como instantes no horário de São Paulo. `inicio` e `fim` voltam exatamente como as strings recebidas, e datas inexistentes, como 31/11, são recusadas como formato inválido.
 

@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { subirServidorMcp, mcp, texto, traceparentNovo } from '../../apoio-teste/processos.js';
+import { subirServidorMcp, mcp, texto, traceparentNovo, SEGREDO_TESTE } from '../../apoio-teste/processos.js';
 
 const h = (hora, dia = '2026-11-03') => `${dia}T${hora}:00-03:00`;
 const MENSAGEM = 'A sala pedida esta ocupada nesse intervalo. Escolha uma alternativa.';
@@ -172,6 +172,17 @@ test('se a sala escolhida foi ocupada antes do retry, pede de novo com as altern
   assert.deepEqual(novo.pedido.params.requestedSchema.properties.sala.enum, ['sala-mirante']);
   assert.equal(novo.pedido.params.requestedSchema.properties.sala.const, undefined);
   assert.notEqual(novo.estado, outroDia.estado);
+});
+
+test('o stderr do servidor nunca mostra a chave nem um requestState', async () => {
+  assert.ok(conflito?.estado, 'o primeiro teste deste arquivo precisa ter rodado');
+  const log = srv.linhas.join('\n');
+  assert.ok(srv.linhasStderr.some((l) => l.includes('retry=sim')), 'esperava retries no log');
+  assert.ok(!log.includes(SEGREDO_TESTE), 'a chave apareceu no log');
+  for (const estado of [conflito.estado, outroDia?.estado].filter(Boolean)) {
+    assert.ok(!log.includes(estado.split('.')[1].slice(0, 40)), 'o payload de um requestState apareceu no log');
+    assert.ok(!log.includes(estado.split('.')[2]), 'o MAC de um requestState apareceu no log');
+  }
 });
 
 test('o retry funciona depois de reiniciar o servidor MCP com a mesma chave', async () => {

@@ -9,7 +9,7 @@
 // com os dois processos recem-iniciados.
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 
@@ -122,15 +122,9 @@ async function main() {
     processos.push(mcp);
     await mcp.pronto;
 
-    const scriptAgente = caminho('agente/src/index.js');
-    const temAgente = existsSync(scriptAgente);
-    if (temAgente) {
-      const agente = subir('agente', 'agente-stderr.log', scriptAgente, { AGENTE_PORT: String(PORTA_AGENTE), MCP_URL: `http://localhost:${PORTA_MCP}/mcp` });
-      processos.push(agente);
-      await agente.pronto;
-    } else {
-      console.error('(agente/src/index.js ainda nao existe: as verificacoes 21 a 36 vao falhar)');
-    }
+    const agente = subir('agente', 'agente-stderr.log', caminho('agente/src/index.js'), { AGENTE_PORT: String(PORTA_AGENTE), MCP_URL: `http://localhost:${PORTA_MCP}/mcp` });
+    processos.push(agente);
+    await agente.pronto;
 
     const [cmd, ...args] = python;
     validador = spawn(cmd, [...args, caminho('validador/validar.py'), '--agente', `http://localhost:${PORTA_AGENTE}`, '--mcp', `http://localhost:${PORTA_MCP}`], {
@@ -143,7 +137,6 @@ async function main() {
       validador.on('error', reject);
       validador.on('exit', resolve);
     });
-    if (!temAgente) return codigo ?? 1;
 
     // Da tempo de a ultima linha do stderr do MCP chegar antes de conferir.
     await new Promise((r) => setTimeout(r, 300));
