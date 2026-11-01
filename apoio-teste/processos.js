@@ -86,11 +86,47 @@ export async function subirServidorMcp({ segredo = SEGREDO_TESTE, env = {} } = {
 
 export { INDEX_MCP };
 
-export async function postar(url, corpo, headers = {}) {
+const INDEX_AGENTE = fileURLToPath(new URL('../agente/src/index.js', import.meta.url));
+
+export async function subirAgente({ mcpUrl, env = {} } = {}) {
+  const proc = subirProcesso(INDEX_AGENTE, { AGENTE_PORT: '0', MCP_URL: mcpUrl, ...env });
+  const porta = await proc.pronto;
+  return { ...proc, porta, base: `http://localhost:${porta}`, rpc: `http://localhost:${porta}/a2a` };
+}
+
+// Espelha a2a() de validador/validar.py: so Content-Type (e traceparent, se dado).
+export function a2a(url, metodo, params, { traceparent, id = randomBytes(6).toString('hex'), headers: extras = {} } = {}) {
+  const headers = { 'Content-Type': 'application/json', ...extras };
+  if (traceparent) headers.traceparent = traceparent;
+  return postar(url, { jsonrpc: '2.0', id, method: metodo, params }, headers);
+}
+
+// Espelha enviar() de validador/validar.py: sem contextId, sem configuration, parts sem kind.
+export function enviar(url, textoPedido, { taskId, traceparent, id, headers, configuration } = {}) {
+  const mensagem = { messageId: `msg-${randomBytes(6).toString('hex')}`, role: 'ROLE_USER', parts: [{ text: textoPedido }] };
+  if (taskId) mensagem.taskId = taskId;
+  const params = { message: mensagem };
+  if (configuration) params.configuration = configuration;
+  return a2a(url, 'SendMessage', params, { traceparent, id, headers });
+}
+
+// Como o validador: aceita result.task ou a Task direta em result.
+export function tarefaDe(corpo) {
+  const r = corpo?.result ?? {};
+  return r.task ?? r;
+}
+
+export function mensagemDe(corpo) {
+  return (tarefaDe(corpo).status?.message?.parts ?? []).map((p) => p.text ?? '').join(' ');
+}
+
+// Com prazo: um servidor travado faz o teste falhar, em vez de pendurar o node --test.
+export async function postar(url, corpo, headers = {}, { prazoMs = 25000 } = {}) {
   const r = await fetch(url, {
     method: 'POST',
     headers,
     body: typeof corpo === 'string' ? corpo : JSON.stringify(corpo),
+    signal: AbortSignal.timeout(prazoMs),
   });
   const texto = await r.text();
   let json;

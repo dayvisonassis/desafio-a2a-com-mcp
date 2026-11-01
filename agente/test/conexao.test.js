@@ -111,7 +111,17 @@ test('conectar espera o servidor MCP que sobe depois do agente', async () => {
   }
 });
 
-test('conectar desiste com mensagem clara depois das tentativas', async () => {
-  const cliente = criarClienteMcp({ url: 'http://localhost:1/mcp', tentativas: 2, intervaloMs: 10 });
-  await assert.rejects(cliente.conectar(), /servidor MCP em http:\/\/localhost:1\/mcp/);
+test('conectar desiste depois das tentativas, com o detalhe so no log', async () => {
+  const log = [];
+  const cliente = criarClienteMcp({ url: 'http://localhost:1/mcp', tentativas: 2, intervaloMs: 10, log: (l) => log.push(l) });
+  await assert.rejects(cliente.conectar(), (e) => /servidor MCP esta indisponivel/.test(e.message) && !e.message.includes('localhost:1'));
+  assert.match(log.join('\n'), /http:\/\/localhost:1\/mcp/);
+});
+
+test('uma chamada espera a conexao no maximo esperaConexaoMs', async () => {
+  const cliente = criarClienteMcp({ url: 'http://localhost:1/mcp', tentativas: 1000, intervaloMs: 50, esperaConexaoMs: 300, log: () => {} });
+  const inicio = Date.now();
+  await assert.rejects(cliente.listarTools(traceparentNovo()), /servidor MCP esta indisponivel/);
+  assert.ok(Date.now() - inicio < 2000, `demorou ${Date.now() - inicio} ms`);
+  await cliente.fechar();
 });

@@ -35,7 +35,12 @@ function descreverFalha(e) {
 
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
-export function criarClienteMcp({ url, tentativas = 40, intervaloMs = 250, timeoutMs = 10000 }) {
+const INDISPONIVEL = 'O servidor MCP esta indisponivel';
+
+// Prazos: o validador espera no maximo 30 s por resposta A2A. Uma Task faz ate
+// tres requests MCP; com 8 s cada (e 8 s de espera pela conexao), ela responde
+// antes disso mesmo com o servidor MCP mudo.
+export function criarClienteMcp({ url, tentativas = 40, intervaloMs = 250, timeoutMs = 8000, esperaConexaoMs = 8000, log = (linha) => console.error(linha) }) {
   let client;
   let conexao;
   let fechado = false;
@@ -65,7 +70,9 @@ export function criarClienteMcp({ url, tentativas = 40, intervaloMs = 250, timeo
       }
     }
     conexao = undefined;
-    throw new Error(`nao consegui conectar ao servidor MCP em ${url}: ${descreverFalha(ultimo)}`);
+    // O detalhe (com a URL interna) fica no log do agente; para fora vai so o resumo.
+    log(`[agente] nao consegui conectar ao servidor MCP em ${url}: ${descreverFalha(ultimo)}`);
+    throw new Error(INDISPONIVEL);
   }
 
   function conectar() {
@@ -74,8 +81,19 @@ export function criarClienteMcp({ url, tentativas = 40, intervaloMs = 250, timeo
     return conexao;
   }
 
+  // Uma Task espera a conexao por no maximo esperaConexaoMs; as tentativas da
+  // subida continuam em segundo plano.
   async function pronto() {
-    await conectar();
+    if (fechado) throw new Error('cliente MCP fechado');
+    let timer;
+    const prazo = new Promise((_, rejeitar) => {
+      timer = setTimeout(() => rejeitar(new Error(INDISPONIVEL)), esperaConexaoMs);
+    });
+    try {
+      await Promise.race([conectar(), prazo]);
+    } finally {
+      clearTimeout(timer);
+    }
     if (fechado) throw new Error('cliente MCP fechado');
     return client;
   }
